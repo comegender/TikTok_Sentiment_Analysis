@@ -1,0 +1,13 @@
+# 搜索关键词列表
+keywords:
+  - "人工智能"
+  - "AI技术"
+
+# 每个关键词最多爬取的视频数
+max_videos_per_keyword: 20
+
+# 每个视频最多爬取的评论数
+max_comments_per_video: 100
+
+# 是否爬取评论
+include_comments: true

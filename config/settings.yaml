@@ -1,0 +1,22 @@
+mongodb:
+  uri: "mongodb://root:123456@localhost:27017"
+  database: "douyin_research"
+
+crawler:
+  headless: true
+  browser:
+    viewport_width: 1920
+    viewport_height: 1080
+    locale: "zh-CN"
+    timezone_id: "Asia/Shanghai"
+  rate_limiting:
+    min_delay_seconds: 2.0
+    max_delay_seconds: 5.0
+    requests_per_session: 30
+    session_cooldown_seconds: 60
+    daily_max_requests: 1000
+
+ethical_limits:
+  max_daily_requests: 1000
+  min_inter_request_delay_ms: 1500
+  data_retention_days: 90
