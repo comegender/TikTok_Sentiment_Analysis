@@ -57,6 +57,7 @@ class DouyinScraper:
         max_videos_per_keyword: int = 20,
         include_comments: bool = True,
         max_comments_per_video: int = 100,
+        manual_mode: bool = False,
     ):
         logger.info(
             "Starting keyword search scraper: keywords={}, max_videos={}, comments={}",
@@ -65,7 +66,7 @@ class DouyinScraper:
 
         for keyword in keywords:
             try:
-                aweme_ids = self._search(keyword, max_videos_per_keyword)
+                aweme_ids = self._search(keyword, max_videos_per_keyword, manual_mode)
                 logger.info("Keyword '{}': found {} videos", keyword, len(aweme_ids))
                 for aweme_id in aweme_ids:
                     try:
@@ -88,6 +89,7 @@ class DouyinScraper:
         max_videos: int = 20,
         include_comments: bool = True,
         max_comments_per_video: int = 100,
+        manual_mode: bool = False,
     ):
         """Scrape videos from the main page recommendation feed (no keyword search)."""
         logger.info(
@@ -113,7 +115,7 @@ class DouyinScraper:
 
     # ── search ──────────────────────────────────────────────────────────
 
-    def _search(self, keyword: str, max_videos: int) -> list[str]:
+    def _search(self, keyword: str, max_videos: int, manual_mode: bool = False) -> list[str]:
         """Search for a keyword. First warms up with main page, then intercepts
         search API responses for video IDs."""
         context = new_context()
@@ -160,6 +162,12 @@ class DouyinScraper:
                 logger.debug("Fallback to direct URL search")
                 search_url = SEARCH_URL.format(quote(keyword))
                 page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+
+            if manual_mode:
+                input(
+                    f"\n[MANUAL] 搜索 '{keyword}' 已提交。\n"
+                    f"请在浏览器中完成验证码/短信验证，确认搜索结果已加载后，按 Enter 继续..."
+                )
 
             page.wait_for_timeout(5000)
 

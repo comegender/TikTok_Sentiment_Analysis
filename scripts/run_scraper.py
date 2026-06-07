@@ -61,6 +61,10 @@ def main():
         "--debug", action="store_true",
         help="Enable debug logging",
     )
+    parser.add_argument(
+        "--manual", action="store_true",
+        help="Pause after each search for manual CAPTCHA/SMS verification",
+    )
     args = parser.parse_args()
 
     setup_logging(level="DEBUG" if args.debug else "INFO")
@@ -71,7 +75,7 @@ def main():
     max_comments = args.max_comments or kw_cfg.get("max_comments_per_video", 50)
     include_comments = not args.no_comments
 
-    if args.headful:
+    if args.headful or args.manual:
         import common.config
         cfg = common.config.get_config()
         cfg["crawler"]["headless"] = False
@@ -85,6 +89,7 @@ def main():
                 max_videos=max_videos,
                 include_comments=include_comments,
                 max_comments_per_video=max_comments,
+                manual_mode=args.manual,
             )
         else:
             keywords = args.keywords.split(",") if args.keywords else kw_cfg.get("keywords", [])
@@ -93,6 +98,7 @@ def main():
                 max_videos_per_keyword=max_videos,
                 include_comments=include_comments,
                 max_comments_per_video=max_comments,
+                manual_mode=args.manual,
             )
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
