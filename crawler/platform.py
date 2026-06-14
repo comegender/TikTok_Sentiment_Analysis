@@ -57,6 +57,7 @@ class DouyinScraper:
         max_videos_per_keyword: int = 20,
         include_comments: bool = True,
         max_comments_per_video: int = 100,
+        max_replies_per_video: int = 20,
         manual_mode: bool = False,
     ):
         logger.info(
@@ -71,7 +72,7 @@ class DouyinScraper:
                 for aweme_id in aweme_ids:
                     try:
                         self.limiter.wait()
-                        self._scrape_video(aweme_id, include_comments, max_comments_per_video)
+                        self._scrape_video(aweme_id, include_comments, max_comments_per_video, max_replies_per_video)
                     except CrawlerError as e:
                         logger.error("Failed to scrape video {}: {}", aweme_id, e)
                         continue
@@ -89,6 +90,7 @@ class DouyinScraper:
         max_videos: int = 20,
         include_comments: bool = True,
         max_comments_per_video: int = 100,
+        max_replies_per_video: int = 20,
         manual_mode: bool = False,
     ):
         """Scrape videos from the main page recommendation feed (no keyword search)."""
@@ -103,7 +105,7 @@ class DouyinScraper:
         for aweme_id in aweme_ids:
             try:
                 self.limiter.wait()
-                self._scrape_video(aweme_id, include_comments, max_comments_per_video)
+                self._scrape_video(aweme_id, include_comments, max_comments_per_video, max_replies_per_video)
             except CrawlerError as e:
                 logger.error("Failed to scrape video {}: {}", aweme_id, e)
                 continue
@@ -229,11 +231,14 @@ class DouyinScraper:
             page.goto(DOUYIN_URL, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(5000)
 
-            # Scroll to load more feed items
+            # Scroll to load more feed items (catch nav errors gracefully)
             for _ in range(max(max_videos // 10, 3)):
-                page.evaluate("window.scrollBy(0, 3000)")
-                page.wait_for_timeout(2000)
                 if len(captured_ids) >= max_videos:
+                    break
+                try:
+                    page.evaluate("window.scrollBy(0, 3000)")
+                    page.wait_for_timeout(2000)
+                except Exception:
                     break
 
         except PlaywrightTimeout:
@@ -249,7 +254,8 @@ class DouyinScraper:
 
     # ── video detail ────────────────────────────────────────────────────
 
-    def _scrape_video(self, aweme_id: str, include_comments: bool, max_comments: int):
+    def _scrape_video(self, aweme_id: str, include_comments: bool, max_comments: int,
+                       max_replies: int = 20):
         """Scrape a single video + optionally its comments.
 
         Sets up response listeners BEFORE navigation so the video detail
@@ -276,8 +282,19 @@ class DouyinScraper:
                 except Exception:
                     pass
 
+        def on_reply_response(response):
+            if "/aweme/v1/web/comment/list/reply/" in response.url and response.status == 200:
+                try:
+                    body = response.json()
+                    comments = parse_comments_from_api(body, aweme_id)
+                    if comments:
+                        insert_comments(comments)
+                except Exception:
+                    pass
+
         page.on("response", on_video_response)
         page.on("response", on_comment_response)
+        page.on("response", on_reply_response)
 
         try:
             page.goto(VIDEO_URL.format(aweme_id), wait_until="domcontentloaded", timeout=30000)
@@ -294,15 +311,18 @@ class DouyinScraper:
 
             upsert_video(video)
 
+            # Parse initial comments and extract cursor for pagination
+            start_cursor = 0
             for data in comments_data:
                 for c in parse_comments_from_api(data, aweme_id):
                     insert_comments([c])
+                # Use cursor from the last response as pagination start
+                if data.get("cursor"):
+                    start_cursor = data["cursor"]
 
             if include_comments:
-                existing = len(comments_data)
-                scroll_needed = max_comments > existing * 20
-                if scroll_needed or not comments_data:
-                    self._scroll_for_comments(page, aweme_id, max_comments)
+                self._scroll_for_comments(page, aweme_id, max_comments, start_cursor)
+                self._load_comment_replies(page, aweme_id, max_replies)
 
             logger.info(
                 "Video {}: '{}' — done",
@@ -316,41 +336,120 @@ class DouyinScraper:
         finally:
             page.remove_listener("response", on_video_response)
             page.remove_listener("response", on_comment_response)
+            page.remove_listener("response", on_reply_response)
             context.close()
 
-    def _scroll_for_comments(self, page, aweme_id: str, max_comments: int):
-        """Scroll the comment area to trigger more API calls."""
-        captured: list[dict] = []
+    def _load_comment_replies(self, page, aweme_id: str, max_replies: int):
+        """Fetch and parse comment replies, stopping when max_replies is reached."""
+        if max_replies <= 0:
+            return
+        from storage.repository import _db
 
-        def on_response(response):
-            if "/aweme/v1/web/comment/list/" in response.url and response.status == 200:
-                try:
-                    captured.append(response.json())
-                except Exception:
-                    pass
+        parent_comments = list(
+            _db().comments.find(
+                {"aweme_id": aweme_id, "reply_to_cid": None, "reply_count": {"$gt": 0}}
+            )
+        )
+        if not parent_comments:
+            logger.debug("No comments with replies to load for {}", aweme_id)
+            return
 
-        page.on("response", on_response)
+        logger.info(
+            "Loading replies for {} comments (max {})",
+            len(parent_comments), max_replies,
+        )
 
-        try:
-            scroll_js = """
-            () => {
-                const sel = document.querySelector('[class*="comment"]');
-                if (sel) { sel.scrollTop = sel.scrollHeight; return; }
-                window.scrollBy(0, 3000);
-            }
-            """
-            rounds = max(max_comments // 20, 2)
-            for _ in range(rounds):
-                try:
-                    page.evaluate(scroll_js)
-                    page.wait_for_timeout(1500)
-                except Exception:
-                    break
+        inserted = 0
+        for cid in [c["cid"] for c in parent_comments]:
+            if inserted >= max_replies:
+                break
+            try:
+                self.limiter.wait()
+                result = page.evaluate(
+                    """
+                    async (params) => {
+                        const url = '/aweme/v1/web/comment/list/reply/'
+                            + '?comment_id=' + params.cid
+                            + '&item_id=' + params.item_id
+                            + '&cursor=0&count=20';
+                        const r = await fetch(url, {
+                            credentials: 'include',
+                            headers: {
+                                'Referer': 'https://www.douyin.com/video/'
+                                    + params.item_id,
+                            }
+                        });
+                        if (!r.ok) return null;
+                        return r.json();
+                    }
+                    """,
+                    {"cid": cid, "item_id": aweme_id},
+                )
+                if result:
+                    replies = parse_comments_from_api(result, aweme_id)
+                    if replies:
+                        inserted += insert_comments(replies)
+            except Exception as e:
+                logger.warning("Failed to load replies for {}: {}", cid[:12], e)
+                continue
 
-        finally:
-            page.remove_listener("response", on_response)
+        if inserted > 0:
+            logger.info("Inserted {} reply comments for {}", inserted, aweme_id)
 
-        for data in captured:
-            comments = parse_comments_from_api(data, aweme_id)
-            if comments:
-                insert_comments(comments)
+    def _scroll_for_comments(self, page, aweme_id: str, max_comments: int,
+                             start_cursor: int = 0):
+        """Load comments via direct API pagination, starting from start_cursor."""
+        from storage.repository import _db
+
+        def _current_count() -> int:
+            return _db().comments.count_documents({"aweme_id": aweme_id})
+
+        target = max_comments
+        initial_count = _current_count()
+        cursor = start_cursor
+        has_more = cursor > 0  # only true if initial response gave us a cursor
+        max_rounds = 30
+
+        for _ in range(max_rounds):
+            if not has_more:
+                break
+            if _current_count() - initial_count >= target:
+                break
+
+            self.limiter.wait()
+            try:
+                result = page.evaluate(
+                    """
+                    (params) => {
+                        const url = '/aweme/v1/web/comment/list/'
+                            + '?aweme_id=' + params.aweme_id
+                            + '&cursor=' + params.cursor
+                            + '&count=20';
+                        return fetch(url, {
+                            credentials: 'include',
+                            headers: {
+                                'Referer': 'https://www.douyin.com/video/'
+                                    + params.aweme_id,
+                            }
+                        }).then(r => {
+                            if (!r.ok) throw new Error('HTTP ' + r.status);
+                            return r.json();
+                        });
+                    }
+                    """,
+                    {"aweme_id": aweme_id, "cursor": cursor},
+                )
+                comments = parse_comments_from_api(result, aweme_id)
+                if comments:
+                    insert_comments(comments)
+                cursor = result.get("cursor", 0)
+                has_more = bool(result.get("has_more", False) and cursor)
+            except Exception as e:
+                logger.warning("Comment pagination failed: {}", e)
+                break
+
+        collected = _current_count() - initial_count
+        logger.info(
+            "Comment pagination for {}: collected {} (target {})",
+            aweme_id, collected, target,
+        )

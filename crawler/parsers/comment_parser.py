@@ -34,8 +34,10 @@ def parse_comments_from_api(json_data: dict, aweme_id: str) -> list[Comment]:
             if ts:
                 create_time = datetime.fromtimestamp(ts)
 
-            reply_id = item.get("reply_comment_id")
-            reply_to = str(reply_id) if reply_id else None
+            reply_id = item.get("reply_id", 0)
+            # API returns 0 (int) or "0" (str) for top-level comments
+            is_reply = reply_id not in (0, "0")
+            reply_to = str(reply_id) if is_reply else None
 
             comment = Comment(
                 cid=str(item.get("cid", "")),
@@ -44,8 +46,7 @@ def parse_comments_from_api(json_data: dict, aweme_id: str) -> list[Comment]:
                 create_time=create_time,
                 user=user,
                 digg_count=item.get("digg_count", 0),
-                reply_count=item.get("reply_comment_count", 0)
-                or item.get("reply_count", 0),
+                reply_count=item.get("reply_comment_total", 0),
                 reply_to_cid=reply_to,
             )
             comments.append(comment)

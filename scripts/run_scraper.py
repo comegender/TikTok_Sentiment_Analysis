@@ -26,7 +26,7 @@ def load_keywords(path: str | None = None) -> dict:
     if path is None:
         path = Path(__file__).resolve().parent.parent / "config" / "keywords.yaml"
     if not Path(path).exists():
-        return {"keywords": ["人工智能"], "max_videos_per_keyword": 10, "max_comments_per_video": 50, "include_comments": True}
+        return {"keywords": ["人工智能"], "max_videos_per_keyword": 10, "max_comments_per_video": 50, "max_replies_per_video": 20, "include_comments": True}
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
@@ -50,8 +50,16 @@ def main():
         help="Max comments per video",
     )
     parser.add_argument(
+        "--max-replies", type=int, default=None,
+        help="Max reply comments per video",
+    )
+    parser.add_argument(
         "--no-comments", action="store_true",
         help="Skip comment scraping",
+    )
+    parser.add_argument(
+        "--no-replies", action="store_true",
+        help="Skip reply scraping",
     )
     parser.add_argument(
         "--headful", action="store_true",
@@ -73,6 +81,7 @@ def main():
     kw_cfg = load_keywords()
     max_videos = args.max_videos or kw_cfg.get("max_videos_per_keyword", 10)
     max_comments = args.max_comments or kw_cfg.get("max_comments_per_video", 50)
+    max_replies = 0 if args.no_replies else (args.max_replies or kw_cfg.get("max_replies_per_video", 20))
     include_comments = not args.no_comments
 
     if args.headful or args.manual:
@@ -89,6 +98,7 @@ def main():
                 max_videos=max_videos,
                 include_comments=include_comments,
                 max_comments_per_video=max_comments,
+                max_replies_per_video=max_replies,
                 manual_mode=args.manual,
             )
         else:
@@ -98,6 +108,7 @@ def main():
                 max_videos_per_keyword=max_videos,
                 include_comments=include_comments,
                 max_comments_per_video=max_comments,
+                max_replies_per_video=max_replies,
                 manual_mode=args.manual,
             )
     except KeyboardInterrupt:

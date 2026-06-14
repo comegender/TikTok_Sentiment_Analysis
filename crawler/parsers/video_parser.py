@@ -58,6 +58,7 @@ def parse_video_from_api(json_data: dict) -> Video | None:
             author=author,
             statistics=statistics,
             hashtags=hashtags,
+            video_url=f"https://www.douyin.com/video/{aweme_id}",
         )
         logger.debug("Parsed video: {} ({})", video.desc[:40], aweme_id)
         return video
